@@ -435,6 +435,10 @@ struct StyleConfig {
     start_index: usize,
     activity_format: String,
     estado_format: String,
+    /// tabs que van ARRIBA, en su propia sección y sin número (p.ej. "hoy")
+    arriba: Vec<String>,
+    format_arriba: String,
+    format_arriba_active: String,
 }
 
 impl Default for StyleConfig {
@@ -453,6 +457,9 @@ impl Default for StyleConfig {
             start_index: 1,
             activity_format: "#[fg=dim]{activity}".to_string(),
             estado_format: "{estado}".to_string(),
+            arriba: vec!["hoy".to_string()],
+            format_arriba: "{name}{atencion}".to_string(),
+            format_arriba_active: "{name} {indicators}{atencion}".to_string(),
         }
     }
 }
@@ -575,6 +582,15 @@ impl ZellijPlugin for State {
         }
         if let Some(v) = configuration.get("estado_format") {
             self.style.estado_format = v.clone();
+        }
+        if let Some(v) = configuration.get("arriba") {
+            self.style.arriba = v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+        }
+        if let Some(v) = configuration.get("format_arriba") {
+            self.style.format_arriba = v.clone();
+        }
+        if let Some(v) = configuration.get("format_arriba_active") {
+            self.style.format_arriba_active = v.clone();
         }
         if let Some(v) = configuration.get("estado_file") {
             self.estado_file = v.clone();
@@ -1092,10 +1108,22 @@ impl State {
 
     fn render_vertical(&mut self, rows: usize, cols: usize) {
         let top_padding = self.style.padding_top;
-        let available_rows = rows.saturating_sub(top_padding);
 
-        let tab_count = self.tabs.len();
-        let active_index = self.active_tab_idx.saturating_sub(1);
+        // Sección de arriba: los tabs fijos (config `arriba`), sin número; luego
+        // una línea en blanco y la lista numerada del resto.
+        let fijos: Vec<usize> = self
+            .style
+            .arriba
+            .iter()
+            .filter_map(|n| self.tabs.iter().position(|t| &t.name == n))
+            .collect();
+        let resto: Vec<usize> = (0..self.tabs.len()).filter(|i| !fijos.contains(i)).collect();
+        let filas_fijas = if fijos.is_empty() { 0 } else { fijos.len() + 1 };
+        let available_rows = rows.saturating_sub(top_padding + filas_fijas);
+
+        let tab_count = resto.len();
+        let active_real = self.active_tab_idx.saturating_sub(1);
+        let active_index = resto.iter().position(|&i| i == active_real).unwrap_or(0);
 
         let (start_index, end_index, tabs_above, tabs_below) =
             calculate_visible_range(tab_count, available_rows, active_index);
@@ -1109,6 +1137,19 @@ impl State {
             row_map.push(None);
         }
 
+        for &i in &fijos {
+            if let Some(tab) = self.tabs.get(i).cloned() {
+                let format = if tab.active { &self.style.format_arriba_active } else { &self.style.format_arriba };
+                let styled = self.expand_tmux_format(format, &tab, i + self.style.start_index);
+                lines.push(self.build_line(&styled, cols, tab.active));
+                row_map.push(Some(i));
+            }
+        }
+        if !fijos.is_empty() {
+            lines.push(self.build_empty_line(cols));
+            row_map.push(None);
+        }
+
         // Render "above" overflow indicator
         if tabs_above > 0 {
             let indicator_text =
@@ -1118,8 +1159,8 @@ impl State {
             row_map.push(None);
         }
 
-        // Render visible tabs
-        for i in start_index..end_index {
+        // Render visible tabs (del resto; `i` es el índice real del tab)
+        for &i in resto.iter().take(end_index).skip(start_index) {
             if lines.len() >= rows {
                 break;
             }
