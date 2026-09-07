@@ -1319,11 +1319,8 @@ fn calculate_visible_range(
     )
 }
 
-/// Grupo "hoy" en la barra: el tab hoy y, colgando de él, los tabs de reunión.
+/// Tabs de reunión: cuelgan de la sección fija de arriba (config `arriba`).
 const SEPARADOR: &str = "#[fg=dim]──────────────────────────";
-fn es_hoy(nombre: &str) -> bool {
-    nombre == "hoy"
-}
 fn es_reunion(nombre: &str) -> bool {
     nombre.starts_with('◷')
 }
