@@ -440,8 +440,8 @@ struct StyleConfig {
 impl Default for StyleConfig {
     fn default() -> Self {
         Self {
-            format: "{index}:{name}".to_string(),
-            format_active: "{index}:{name} {indicators}".to_string(),
+            format: "{index}:{name}{atencion}".to_string(),
+            format_active: "{index}:{name} {indicators}{atencion}".to_string(),
             overflow_above: "  ^ +{count}".to_string(),
             overflow_below: "  v +{count}".to_string(),
             indicator_active: "*".to_string(),
@@ -476,6 +476,20 @@ struct Estado {
 
 const MAX_PENDIENTES: usize = 6;
 
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+struct AtencionEntrada {
+    #[serde(default)]
+    estado: String,
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+struct AtencionPipe {
+    #[serde(default)]
+    tab: String,
+    #[serde(default)]
+    estado: String,
+}
+
 // ========== PLUGIN STATE ==========
 
 #[derive(Default)]
@@ -493,6 +507,13 @@ struct State {
     own_session: String,
     estado: BTreeMap<String, Estado>,
     estado_file: String,
+    /// semáforo de atención por tab: "trabajando" | "espera" | "listo" (hooks de Claude Code)
+    atencion: BTreeMap<String, String>,
+    atencion_file: String,
+    /// bitácora de foco: cada cambio de tab activo, anotado por la instancia de ese tab
+    tiempo_file: String,
+    propio_id: u32,
+    ultimo_tab_activo: String,
     /// fila dibujada -> índice (0-based) del tab al que pertenece
     row_map: Vec<Option<usize>>,
 }
@@ -558,6 +579,24 @@ impl ZellijPlugin for State {
         if let Some(v) = configuration.get("estado_file") {
             self.estado_file = v.clone();
         }
+        if let Some(v) = configuration.get("atencion_file") {
+            self.atencion_file = v.clone();
+        }
+        if let Some(v) = configuration.get("tiempo_file") {
+            self.tiempo_file = v.clone();
+        }
+        // sin config explícita, viven junto a estado.json
+        if let Some(dir) = std::path::Path::new(&self.estado_file).parent().map(|d| d.to_string_lossy().to_string())
+            && !self.estado_file.is_empty()
+        {
+            if self.atencion_file.is_empty() {
+                self.atencion_file = format!("{}/atencion.json", dir);
+            }
+            if self.tiempo_file.is_empty() {
+                self.tiempo_file = format!("{}/tiempo.log", dir);
+            }
+        }
+        self.propio_id = get_plugin_ids().plugin_id;
 
         request_permission(&[
             PermissionType::ReadApplicationState,
@@ -590,6 +629,7 @@ impl ZellijPlugin for State {
                     self.update(cached_event);
                 }
                 self.leer_estado();
+                self.leer_atencion();
                 should_render = true;
             }
             return should_render;
@@ -616,6 +656,22 @@ impl ZellijPlugin for State {
                 }
                 self.active_tab_idx = active_tab_idx;
                 self.tabs = tabs;
+                if let Some(t) = self.tabs.iter().find(|t| t.active) {
+                    let nombre = t.name.clone();
+                    let pos = t.position;
+                    if nombre != self.ultimo_tab_activo {
+                        self.ultimo_tab_activo = nombre.clone();
+                        // "terminó" se lee al entrar al tab: desaparece la marca
+                        if self.atencion.get(&nombre).map(|s| s == "listo").unwrap_or(false) {
+                            self.atencion.remove(&nombre);
+                            should_render = true;
+                        }
+                        // solo la instancia que vive en el tab activo anota (una vez por cambio)
+                        if self.propio_tab() == Some(pos) {
+                            self.anotar_tiempo(&nombre);
+                        }
+                    }
+                }
             }
             Event::PaneUpdate(pane_manifest) => {
                 self.pane_manifest = pane_manifest;
@@ -638,6 +694,12 @@ impl ZellijPlugin for State {
                 _ => {}
             },
             Event::RunCommandResult(_code, stdout, _stderr, ctx) => {
+                if ctx.get("flow").map(|s| s.as_str()) == Some("atencion") {
+                    if let Ok(m) = serde_json::from_slice::<BTreeMap<String, AtencionEntrada>>(&stdout) {
+                        self.atencion = m.into_iter().filter(|(_, e)| !e.estado.is_empty()).map(|(k, e)| (k, e.estado)).collect();
+                        should_render = true;
+                    }
+                }
                 if ctx.get("flow").map(|s| s.as_str()) == Some("estado") {
                     match serde_json::from_slice::<BTreeMap<String, Estado>>(&stdout) {
                         Ok(m) => {
@@ -693,6 +755,21 @@ impl ZellijPlugin for State {
                 self.leer_estado();
                 false
             }
+            "atencion" => {
+                if let Some(payload) = pipe_message.payload.as_deref()
+                    && let Ok(a) = serde_json::from_str::<AtencionPipe>(payload)
+                    && !a.tab.is_empty()
+                {
+                    if a.estado.is_empty() {
+                        self.atencion.remove(&a.tab);
+                    } else {
+                        self.atencion.insert(a.tab, a.estado);
+                    }
+                    true
+                } else {
+                    false
+                }
+            }
             "activity" => {
                 if let Some(payload) = pipe_message.payload.as_deref()
                     && let Some((zsession, name, act)) = activity::parse_activity(payload)
@@ -734,6 +811,49 @@ impl State {
         let mut ctx = BTreeMap::new();
         ctx.insert("flow".to_string(), "estado".to_string());
         run_command(&["cat", &self.estado_file], ctx);
+    }
+
+    fn leer_atencion(&self) {
+        if !self.permissions_granted || self.atencion_file.is_empty() {
+            return;
+        }
+        let mut ctx = BTreeMap::new();
+        ctx.insert("flow".to_string(), "atencion".to_string());
+        run_command(&["cat", &self.atencion_file], ctx);
+    }
+
+    /// Posición del tab donde vive ESTA instancia (por su id de plugin en el manifest).
+    fn propio_tab(&self) -> Option<usize> {
+        self.pane_manifest
+            .panes
+            .iter()
+            .find(|(_, panes)| panes.iter().any(|p| p.is_plugin && p.id == self.propio_id))
+            .map(|(pos, _)| *pos)
+    }
+
+    /// Anota "hora<TAB>nombre" en tiempo.log (la hora la pone el host).
+    fn anotar_tiempo(&self, nombre: &str) {
+        if !self.permissions_granted || self.tiempo_file.is_empty() {
+            return;
+        }
+        let seguro = nombre.replace('\'', "'\"'\"'");
+        let cmd = format!(
+            "printf '%s\t%s\n' \"$(date +%Y-%m-%dT%H:%M:%S)\" '{}' >> '{}'",
+            seguro, self.tiempo_file
+        );
+        let mut ctx = BTreeMap::new();
+        ctx.insert("flow".to_string(), "tiempo".to_string());
+        run_command(&["sh", "-c", &cmd], ctx);
+    }
+
+    /// Símbolo y color del semáforo de un tab.
+    fn atencion_de(&self, tab: &str) -> (&'static str, ColorSpec) {
+        match self.atencion.get(tab).map(|s| s.as_str()) {
+            Some("trabajando") => ("●", ColorSpec::EightBit(4)),
+            Some("espera") => ("◔", ColorSpec::EightBit(3)),
+            Some("listo") => ("✓", ColorSpec::EightBit(2)),
+            _ => ("", ColorSpec::Default),
+        }
     }
 
     /// Filas extra bajo un tab: su estado (archivo) y su actividad viva (pipe).
@@ -831,6 +951,16 @@ impl State {
                     current_style = style;
                 }
                 FormatToken::Variable { name, width } => {
+                    if name == "atencion" || name == "a" {
+                        let (texto, color) = self.atencion_de(&tab.name);
+                        if !texto.is_empty() {
+                            let mut st = current_style.clone();
+                            st.fg = color;
+                            st.dim = false;
+                            result.push(format!(" {}", texto), st);
+                        }
+                        continue;
+                    }
                     let value = match name.as_str() {
                         "index" | "i" => index.to_string(),
                         "name" | "n" => {
