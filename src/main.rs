@@ -1322,7 +1322,8 @@ fn calculate_visible_range(
 /// Tabs de reunión: cuelgan de la sección fija de arriba (config `arriba`).
 const SEPARADOR: &str = "#[fg=dim]──────────────────────────";
 fn es_reunion(nombre: &str) -> bool {
-    nombre.starts_with('◷')
+    // tabs de acción que cuelgan de hoy: reuniones (◷) y triage de pendientes (⚑)
+    nombre.starts_with('◷') || nombre.starts_with('⚑')
 }
 
 fn norm_session_name(s: &str) -> String {
