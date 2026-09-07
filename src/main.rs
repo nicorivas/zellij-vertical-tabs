@@ -434,6 +434,7 @@ struct StyleConfig {
     max_name_length: usize,
     start_index: usize,
     activity_format: String,
+    estado_format: String,
 }
 
 impl Default for StyleConfig {
@@ -451,9 +452,29 @@ impl Default for StyleConfig {
             border: String::new(),
             start_index: 1,
             activity_format: "#[fg=dim]{activity}".to_string(),
+            estado_format: "{estado}".to_string(),
         }
     }
 }
+
+// ========== ESTADO POR TAB (fork nicorivas: los tabs son proyectos) ==========
+//
+// Cada tab puede tener un estado que sobrevive a la sesión: una línea libre
+// ("qué está pasando") y una lista de pendientes. La fuente de verdad es un JSON
+// en el host (`estado_file` en la config del layout), con la forma
+//   { "<nombre del tab>": { "estado": "...", "pendientes": ["...", "▶ en curso"] } }
+// El plugin lo lee con `cat` al cargar y cada vez que recibe el pipe
+// `estado_reload`. Un pendiente que empieza con "▶ " se dibuja como en curso.
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+struct Estado {
+    #[serde(default)]
+    estado: String,
+    #[serde(default)]
+    pendientes: Vec<String>,
+}
+
+const MAX_PENDIENTES: usize = 6;
 
 // ========== PLUGIN STATE ==========
 
@@ -470,6 +491,10 @@ struct State {
     pending_events: Vec<Event>,
     activity: BTreeMap<String, activity::Activity>,
     own_session: String,
+    estado: BTreeMap<String, Estado>,
+    estado_file: String,
+    /// fila dibujada -> índice (0-based) del tab al que pertenece
+    row_map: Vec<Option<usize>>,
 }
 
 register_plugin!(State);
@@ -521,10 +546,17 @@ impl ZellijPlugin for State {
         if let Some(v) = configuration.get("activity_format") {
             self.style.activity_format = v.clone();
         }
+        if let Some(v) = configuration.get("estado_format") {
+            self.style.estado_format = v.clone();
+        }
+        if let Some(v) = configuration.get("estado_file") {
+            self.estado_file = v.clone();
+        }
 
         request_permission(&[
             PermissionType::ReadApplicationState,
             PermissionType::ChangeApplicationState,
+            PermissionType::RunCommands,
         ]);
 
         subscribe(&[
@@ -534,6 +566,7 @@ impl ZellijPlugin for State {
             EventType::Mouse,
             EventType::PermissionRequestResult,
             EventType::SessionUpdate,
+            EventType::RunCommandResult,
         ]);
     }
 
@@ -550,6 +583,7 @@ impl ZellijPlugin for State {
                     let cached_event = self.pending_events.remove(0);
                     self.update(cached_event);
                 }
+                self.leer_estado();
                 should_render = true;
             }
             return should_render;
@@ -597,6 +631,19 @@ impl ZellijPlugin for State {
                 }
                 _ => {}
             },
+            Event::RunCommandResult(_code, stdout, _stderr, ctx) => {
+                if ctx.get("flow").map(|s| s.as_str()) == Some("estado") {
+                    match serde_json::from_slice::<BTreeMap<String, Estado>>(&stdout) {
+                        Ok(m) => {
+                            self.estado = m;
+                            should_render = true;
+                        }
+                        Err(_) => {
+                            // JSON roto o archivo ausente: conservar lo último bueno
+                        }
+                    }
+                }
+            }
             Event::SessionUpdate(sessions, _) => {
                 if let Some(s) = sessions.iter().find(|s| s.is_current_session)
                     && self.own_session != s.name
@@ -611,6 +658,11 @@ impl ZellijPlugin for State {
     }
 
     fn pipe(&mut self, pipe_message: PipeMessage) -> bool {
+        // Un pipe lanzado desde la CLI queda bloqueado hasta que algún plugin lo
+        // suelta; si no, `zellij pipe` no vuelve nunca (visto en 0.44 y 0.45).
+        if let PipeSource::Cli(id) = &pipe_message.source {
+            unblock_cli_pipe_input(id);
+        }
         match pipe_message.name.as_str() {
             "set_selectable" => {
                 match pipe_message.payload.as_deref() {
@@ -629,6 +681,10 @@ impl ZellijPlugin for State {
             "toggle_selectable" => {
                 self.is_selectable = !self.is_selectable;
                 set_selectable(self.is_selectable);
+                false
+            }
+            "estado_reload" => {
+                self.leer_estado();
                 false
             }
             "activity" => {
@@ -657,6 +713,55 @@ impl ZellijPlugin for State {
 }
 
 impl State {
+    /// Pide al host el archivo de estado; la respuesta llega como RunCommandResult.
+    fn leer_estado(&self) {
+        if self.estado_file.is_empty() {
+            return;
+        }
+        let mut ctx = BTreeMap::new();
+        ctx.insert("flow".to_string(), "estado".to_string());
+        run_command(&["cat", &self.estado_file], ctx);
+    }
+
+    /// Filas extra bajo un tab: su estado (archivo) y su actividad viva (pipe).
+    /// Ya vienen con el formato de estilo aplicado; falta parsearlas y truncarlas.
+    fn filas_extra(&self, tab: &TabInfo, cols: usize) -> Vec<String> {
+        let mut extra = Vec::new();
+        if let Some(e) = self.estado.get(&tab.name) {
+            if !e.estado.is_empty() {
+                let fila = format!("  › {}", e.estado);
+                extra.push(self.style.estado_format.replace("{estado}", &fila));
+            }
+            for p in e.pendientes.iter().take(MAX_PENDIENTES) {
+                let (caja, texto) = match p.strip_prefix("▶ ") {
+                    Some(t) => ("▣", t),
+                    None => ("☐", p.as_str()),
+                };
+                let fila = format!("  {} {}", caja, texto);
+                extra.push(self.style.activity_format.replace("{activity}", &fila));
+            }
+            if e.pendientes.len() > MAX_PENDIENTES {
+                extra.push(self.style.activity_format.replace("{activity}", "  …"));
+            }
+        }
+        // actividad viva: primero por nombre de tab (este fork), luego por título
+        // del pane enfocado (comportamiento upstream, para productores como Claude Code)
+        let por_tab = format!("{}\u{1}{}", self.own_session, norm_session_name(&tab.name));
+        let act = self.activity.get(&por_tab).or_else(|| {
+            let pane = self
+                .get_focused_pane_title(tab.position)
+                .map(|t| norm_session_name(&t))
+                .unwrap_or_else(|| norm_session_name(&tab.name));
+            self.activity.get(&format!("{}\u{1}{}", self.own_session, pane))
+        });
+        if let Some(act) = act {
+            for arow in activity::render_activity(act, cols) {
+                extra.push(self.style.activity_format.replace("{activity}", &arow));
+            }
+        }
+        extra
+    }
+
     fn get_focused_pane_title(&self, tab_position: usize) -> Option<String> {
         if let Some(panes) = self.pane_manifest.panes.get(&tab_position) {
             for pane in panes {
@@ -853,10 +958,12 @@ impl State {
             calculate_visible_range(tab_count, available_rows, active_index);
 
         let mut lines: Vec<String> = Vec::with_capacity(rows);
+        let mut row_map: Vec<Option<usize>> = Vec::with_capacity(rows);
 
         // Add top padding lines
         for _ in 0..top_padding {
             lines.push(self.build_empty_line(cols));
+            row_map.push(None);
         }
 
         // Render "above" overflow indicator
@@ -865,6 +972,7 @@ impl State {
                 self.expand_overflow_format(&self.style.overflow_above, tabs_above);
             let styled = parse_styled_string(&indicator_text);
             lines.push(self.build_line(&styled, cols, false));
+            row_map.push(None);
         }
 
         // Render visible tabs
@@ -882,21 +990,15 @@ impl State {
 
                 let styled = self.expand_tmux_format(format, &tab, i + self.style.start_index);
                 lines.push(self.build_line(&styled, cols, is_active));
+                row_map.push(Some(i));
 
-                let pane = self
-                    .get_focused_pane_title(tab.position)
-                    .map(|t| norm_session_name(&t))
-                    .unwrap_or_else(|| norm_session_name(&tab.name));
-                let key = format!("{}\u{1}{}", self.own_session, pane);
-                if let Some(act) = self.activity.get(&key) {
-                    for arow in activity::render_activity(act, cols) {
-                        if lines.len() >= rows {
-                            break;
-                        }
-                        let arendered = self.style.activity_format.replace("{activity}", &arow);
-                        let astyled = parse_styled_string(&arendered);
-                        lines.push(self.build_line(&astyled, cols, false));
+                for fila in self.filas_extra(&tab, cols) {
+                    if lines.len() >= rows {
+                        break;
                     }
+                    let styled = parse_styled_string(&fila);
+                    lines.push(self.build_line(&styled, cols, false));
+                    row_map.push(Some(i));
                 }
             }
         }
@@ -907,12 +1009,15 @@ impl State {
                 self.expand_overflow_format(&self.style.overflow_below, tabs_below);
             let styled = parse_styled_string(&indicator_text);
             lines.push(self.build_line(&styled, cols, false));
+            row_map.push(None);
         }
 
         // Fill remaining rows with empty lines (just border)
         while lines.len() < rows {
             lines.push(self.build_empty_line(cols));
+            row_map.push(None);
         }
+        self.row_map = row_map;
 
         // Print all lines with ANSI styling
         for (i, line) in lines.iter().enumerate() {
@@ -927,6 +1032,13 @@ impl State {
     fn get_tab_at_row(&self, row: usize) -> Option<usize> {
         if self.tabs.is_empty() {
             return None;
+        }
+
+        // Con filas de estado bajo los tabs, la fila ya no es el índice: usar el
+        // mapa que dejó el último render. Las filas sin tab (indicadores de
+        // overflow, relleno) caen al cálculo de abajo.
+        if let Some(Some(i)) = self.row_map.get(row) {
+            return Some(i + 1);
         }
 
         let tab_count = self.tabs.len();

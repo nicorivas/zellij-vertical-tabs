@@ -3357,6 +3357,8 @@ name = "zellij-vertical-tabs"
 version = "0.1.0"
 dependencies = [
  "activity",
+ "serde",
+ "serde_json",
  "unicode-width 0.2.2",
  "zellij-tile",
 ]
