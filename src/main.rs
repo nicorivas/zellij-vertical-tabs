@@ -1111,12 +1111,19 @@ impl State {
 
         // Sección de arriba: los tabs fijos (config `arriba`), sin número; luego
         // una línea en blanco y la lista numerada del resto.
-        let fijos: Vec<usize> = self
+        // Arriba van los tabs de `arriba` (hoy) y, colgando de ellos, los tabs de
+        // reunión (◷), sin número y en otro color: no son proyectos.
+        let mut fijos: Vec<usize> = self
             .style
             .arriba
             .iter()
             .filter_map(|n| self.tabs.iter().position(|t| &t.name == n))
             .collect();
+        for i in 0..self.tabs.len() {
+            if es_reunion(&self.tabs[i].name) && !fijos.contains(&i) {
+                fijos.push(i);
+            }
+        }
         let resto: Vec<usize> = (0..self.tabs.len()).filter(|i| !fijos.contains(i)).collect();
         let filas_fijas = if fijos.is_empty() { 0 } else { fijos.len() + 1 };
         let available_rows = rows.saturating_sub(top_padding + filas_fijas);
@@ -1139,14 +1146,22 @@ impl State {
 
         for &i in &fijos {
             if let Some(tab) = self.tabs.get(i).cloned() {
-                let format = if tab.active { &self.style.format_arriba_active } else { &self.style.format_arriba };
+                let reunion_activo = "   #[fg=13]{name} {indicators}{atencion}".to_string();
+                let reunion = "   #[fg=13]{name}{atencion}".to_string();
+                let format: &str = if es_reunion(&tab.name) {
+                    if tab.active { &reunion_activo } else { &reunion }
+                } else if tab.active {
+                    &self.style.format_arriba_active
+                } else {
+                    &self.style.format_arriba
+                };
                 let styled = self.expand_tmux_format(format, &tab, i + self.style.start_index);
                 lines.push(self.build_line(&styled, cols, tab.active));
                 row_map.push(Some(i));
             }
         }
         if !fijos.is_empty() {
-            lines.push(self.build_empty_line(cols));
+            lines.push(self.build_line(&parse_styled_string(SEPARADOR), cols, false));
             row_map.push(None);
         }
 
@@ -1165,23 +1180,8 @@ impl State {
                 break;
             }
             if let Some(tab) = self.tabs.get(i).cloned() {
-                // El grupo "hoy": una raya antes del tab hoy, y otra después del último
-                // tab de reunión (los que empiezan con ◷) o después de hoy si no hay.
-                if es_hoy(&tab.name) && lines.len() < rows {
-                    lines.push(self.build_line(&parse_styled_string(SEPARADOR), cols, false));
-                    row_map.push(None);
-                }
                 let is_active = tab.active;
-                // Los tabs de reunión no son proyectos: sin número, sangrados y en otro
-                // color, para que se lean como lo que son. "hoy" va en negrita.
-                let formato_propio;
-                let format: &str = if es_reunion(&tab.name) {
-                    formato_propio = if is_active { "   #[fg=13]{name} {indicators}{atencion}".to_string() } else { "   #[fg=13]{name}{atencion}".to_string() };
-                    &formato_propio
-                } else if es_hoy(&tab.name) {
-                    formato_propio = if is_active { "#[bold]{index}:{name} {indicators}{atencion}".to_string() } else { "#[bold]{index}:{name}{atencion}".to_string() };
-                    &formato_propio
-                } else if is_active {
+                let format = if is_active {
                     &self.style.format_active
                 } else {
                     &self.style.format
@@ -1198,12 +1198,6 @@ impl State {
                     let styled = parse_styled_string(&fila);
                     lines.push(self.build_line(&styled, cols, false));
                     row_map.push(Some(i));
-                }
-                let en_grupo = es_hoy(&tab.name) || es_reunion(&tab.name);
-                let siguiente_en_grupo = self.tabs.get(i + 1).map(|t| es_reunion(&t.name)).unwrap_or(false);
-                if en_grupo && !siguiente_en_grupo && lines.len() < rows {
-                    lines.push(self.build_line(&parse_styled_string(SEPARADOR), cols, false));
-                    row_map.push(None);
                 }
             }
         }
