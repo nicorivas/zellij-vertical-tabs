@@ -850,7 +850,7 @@ impl State {
     fn atencion_de(&self, tab: &str) -> (&'static str, ColorSpec) {
         match self.atencion.get(tab).map(|s| s.as_str()) {
             Some("trabajando") => ("●", ColorSpec::EightBit(4)),
-            Some("espera") => ("◔", ColorSpec::EightBit(3)),
+            Some("espera") => ("○", ColorSpec::EightBit(3)),
             Some("listo") => ("✓", ColorSpec::EightBit(2)),
             _ => ("", ColorSpec::Default),
         }
