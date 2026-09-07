@@ -501,6 +501,12 @@ register_plugin!(State);
 
 impl ZellijPlugin for State {
     fn load(&mut self, configuration: BTreeMap<String, String>) {
+        // El hook de zellij-tile vuelve a tomar el mutex del estado al reportar un
+        // pánico y se pierde el mensaje original; este lo escribe a stderr (va al
+        // log de Zellij) antes de abortar.
+        std::panic::set_hook(Box::new(|info| {
+            eprintln!("PANIC zellij-vertical-tabs: {}", info);
+        }));
         // Parse style configuration
         if let Some(v) = configuration.get("format") {
             self.style.format = v.clone();
@@ -714,8 +720,15 @@ impl ZellijPlugin for State {
 
 impl State {
     /// Pide al host el archivo de estado; la respuesta llega como RunCommandResult.
-    fn leer_estado(&self) {
+    fn leer_estado(&mut self) {
         if self.estado_file.is_empty() {
+            return;
+        }
+        // Un pipe puede llegar antes de que el host conceda los permisos (las
+        // instancias cargan escalonadas). run_command sin permiso hace fallar la
+        // llamada wasm y deja el mutex del estado tomado: la instancia queda
+        // muerta. Al concederse los permisos se lee igual, así que basta con no llamar.
+        if !self.permissions_granted {
             return;
         }
         let mut ctx = BTreeMap::new();
