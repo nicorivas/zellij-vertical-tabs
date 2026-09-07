@@ -1165,8 +1165,23 @@ impl State {
                 break;
             }
             if let Some(tab) = self.tabs.get(i).cloned() {
+                // El grupo "hoy": una raya antes del tab hoy, y otra después del último
+                // tab de reunión (los que empiezan con ◷) o después de hoy si no hay.
+                if es_hoy(&tab.name) && lines.len() < rows {
+                    lines.push(self.build_line(&parse_styled_string(SEPARADOR), cols, false));
+                    row_map.push(None);
+                }
                 let is_active = tab.active;
-                let format = if is_active {
+                // Los tabs de reunión no son proyectos: sin número, sangrados y en otro
+                // color, para que se lean como lo que son. "hoy" va en negrita.
+                let formato_propio;
+                let format: &str = if es_reunion(&tab.name) {
+                    formato_propio = if is_active { "   #[fg=13]{name} {indicators}{atencion}".to_string() } else { "   #[fg=13]{name}{atencion}".to_string() };
+                    &formato_propio
+                } else if es_hoy(&tab.name) {
+                    formato_propio = if is_active { "#[bold]{index}:{name} {indicators}{atencion}".to_string() } else { "#[bold]{index}:{name}{atencion}".to_string() };
+                    &formato_propio
+                } else if is_active {
                     &self.style.format_active
                 } else {
                     &self.style.format
@@ -1183,6 +1198,12 @@ impl State {
                     let styled = parse_styled_string(&fila);
                     lines.push(self.build_line(&styled, cols, false));
                     row_map.push(Some(i));
+                }
+                let en_grupo = es_hoy(&tab.name) || es_reunion(&tab.name);
+                let siguiente_en_grupo = self.tabs.get(i + 1).map(|t| es_reunion(&t.name)).unwrap_or(false);
+                if en_grupo && !siguiente_en_grupo && lines.len() < rows {
+                    lines.push(self.build_line(&parse_styled_string(SEPARADOR), cols, false));
+                    row_map.push(None);
                 }
             }
         }
@@ -1302,6 +1323,15 @@ fn calculate_visible_range(
         start_index,
         tab_count.saturating_sub(end_index),
     )
+}
+
+/// Grupo "hoy" en la barra: el tab hoy y, colgando de él, los tabs de reunión.
+const SEPARADOR: &str = "#[fg=dim]──────────────────────────";
+fn es_hoy(nombre: &str) -> bool {
+    nombre == "hoy"
+}
+fn es_reunion(nombre: &str) -> bool {
+    nombre.starts_with('◷')
 }
 
 fn norm_session_name(s: &str) -> String {
