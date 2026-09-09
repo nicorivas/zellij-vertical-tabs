@@ -490,6 +490,16 @@ struct AtencionEntrada {
     estado: String,
 }
 
+/// pipe `mudar`: mover los panes de terminal del tab `desde` al tab `hacia`.
+/// Solo actúa la instancia que vive en `desde` (una vez, aunque haya N instancias).
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+struct MudarPipe {
+    #[serde(default)]
+    desde: String,
+    #[serde(default)]
+    hacia: String,
+}
+
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 struct AtencionPipe {
     #[serde(default)]
@@ -772,6 +782,14 @@ impl ZellijPlugin for State {
                 self.leer_estado();
                 false
             }
+            "mudar" => {
+                if let Some(payload) = pipe_message.payload.as_deref()
+                    && let Ok(m) = serde_json::from_str::<MudarPipe>(payload)
+                {
+                    self.mudar(&m.desde, &m.hacia);
+                }
+                false
+            }
             "atencion" => {
                 if let Some(payload) = pipe_message.payload.as_deref()
                     && let Ok(a) = serde_json::from_str::<AtencionPipe>(payload)
@@ -837,6 +855,32 @@ impl State {
         let mut ctx = BTreeMap::new();
         ctx.insert("flow".to_string(), "atencion".to_string());
         run_command(&["cat", &self.atencion_file], ctx);
+    }
+
+    /// Mueve los panes de terminal del tab `desde` al tab `hacia`, si esta instancia
+    /// vive en `desde`. El tab de origen, vacío, lo cierra Zellij.
+    fn mudar(&self, desde: &str, hacia: &str) {
+        let propio = match self.propio_tab() {
+            Some(p) => p,
+            None => return,
+        };
+        let soy_origen = self.tabs.iter().any(|t| t.position == propio && t.name == desde);
+        if !soy_origen {
+            return;
+        }
+        let destino = match self.tabs.iter().find(|t| t.name == hacia) {
+            Some(t) => t.position,
+            None => return,
+        };
+        let ids: Vec<PaneId> = self
+            .pane_manifest
+            .panes
+            .get(&propio)
+            .map(|ps| ps.iter().filter(|p| !p.is_plugin).map(|p| PaneId::Terminal(p.id)).collect())
+            .unwrap_or_default();
+        if !ids.is_empty() {
+            break_panes_to_tab_with_index(&ids, destino, true);
+        }
     }
 
     /// Posición del tab donde vive ESTA instancia (por su id de plugin en el manifest).
