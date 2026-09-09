@@ -649,6 +649,7 @@ impl ZellijPlugin for State {
             EventType::PermissionRequestResult,
             EventType::SessionUpdate,
             EventType::RunCommandResult,
+            EventType::Timer,
         ]);
     }
 
@@ -665,9 +666,7 @@ impl ZellijPlugin for State {
                     let cached_event = self.pending_events.remove(0);
                     self.update(cached_event);
                 }
-                self.leer_estado();
-                self.leer_atencion();
-                self.leer_archivados();
+                self.sondear();
                 should_render = true;
             }
             return should_render;
@@ -731,7 +730,39 @@ impl ZellijPlugin for State {
                 }
                 _ => {}
             },
+            Event::Timer(_) => {
+                self.sondear();
+            }
             Event::RunCommandResult(_code, stdout, _stderr, ctx) => {
+                if ctx.get("flow").map(|s| s.as_str()) == Some("sondeo") {
+                    // estado @@ atención @@ archivados @@ mostrar
+                    let texto = String::from_utf8_lossy(&stdout).to_string();
+                    let partes: Vec<&str> = texto.split("\n@@\n").collect();
+                    if let Some(s) = partes.first()
+                        && let Ok(m) = serde_json::from_str::<BTreeMap<String, Estado>>(s.trim())
+                    {
+                        let huella = |e: &BTreeMap<String, Estado>| e.iter().map(|(k, v)| format!("{}|{}|{}", k, v.estado, v.pendientes.join("|"))).collect::<Vec<_>>();
+                        if huella(&m) != huella(&self.estado) {
+                            self.estado = m;
+                            should_render = true;
+                        }
+                    }
+                    if let Some(s) = partes.get(1)
+                        && let Ok(m) = serde_json::from_str::<BTreeMap<String, AtencionEntrada>>(s.trim())
+                    {
+                        let nuevo: BTreeMap<String, String> = m.into_iter().filter(|(_, e)| !e.estado.is_empty()).map(|(k, e)| (k, e.estado)).collect();
+                        if nuevo != self.atencion { self.atencion = nuevo; should_render = true; }
+                    }
+                    if let Some(s) = partes.get(2)
+                        && let Ok(v) = serde_json::from_str::<Vec<String>>(s.trim())
+                    {
+                        let nuevo: std::collections::BTreeSet<String> = v.into_iter().collect();
+                        if nuevo != self.archivados { self.archivados = nuevo; should_render = true; }
+                    }
+                    let mostrar = partes.get(3).map(|s| s.trim() == "1").unwrap_or(false);
+                    if mostrar != self.mostrar_archivados { self.mostrar_archivados = mostrar; should_render = true; }
+                    set_timeout(4.0);
+                }
                 if ctx.get("flow").map(|s| s.as_str()) == Some("archivados") {
                     if let Ok(v) = serde_json::from_slice::<Vec<String>>(&stdout) {
                         self.archivados = v.into_iter().collect();
@@ -889,23 +920,45 @@ impl State {
             Some(p) => p,
             None => return,
         };
-        let soy_origen = self.tabs.iter().any(|t| t.position == propio && t.name == desde);
-        if !soy_origen {
+        // Actúa la instancia que vive en el DESTINO (una sola, y viva aunque la del
+        // origen haya muerto); el manifest trae los panes de todos los tabs.
+        let destino = match self.tabs.iter().find(|t| t.name == hacia) {
+            Some(t) => t.position,
+            None => return,
+        };
+        if destino != propio {
             return;
         }
-        let destino = match self.tabs.iter().find(|t| t.name == hacia) {
+        let origen = match self.tabs.iter().find(|t| t.name == desde) {
             Some(t) => t.position,
             None => return,
         };
         let ids: Vec<PaneId> = self
             .pane_manifest
             .panes
-            .get(&propio)
+            .get(&origen)
             .map(|ps| ps.iter().filter(|p| !p.is_plugin).map(|p| PaneId::Terminal(p.id)).collect())
             .unwrap_or_default();
         if !ids.is_empty() {
             break_panes_to_tab_with_index(&ids, destino, true);
         }
+    }
+
+    /// Sondeo: un solo `sh -c` lee estado.json, atencion.json, archivados.json y la marca
+    /// de "mostrar archivados". Va por Timer/RunCommandResult, el camino serializado del
+    /// host; los pipes NO lo son (reentran la instancia y revientan el mutex de stdout).
+    fn sondear(&self) {
+        if !self.permissions_granted || self.estado_file.is_empty() {
+            return;
+        }
+        let dir = std::path::Path::new(&self.estado_file).parent().map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
+        let cmd = format!(
+            "cat '{}' 2>/dev/null; printf '\\n@@\\n'; cat '{}' 2>/dev/null; printf '\\n@@\\n'; cat '{}' 2>/dev/null; printf '\\n@@\\n'; [ -e '{}/archivados.mostrar' ] && echo 1",
+            self.estado_file, self.atencion_file, self.archivados_file, dir
+        );
+        let mut ctx = BTreeMap::new();
+        ctx.insert("flow".to_string(), "sondeo".to_string());
+        run_command(&["sh", "-c", &cmd], ctx);
     }
 
     fn leer_archivados(&self) {
@@ -1330,8 +1383,9 @@ impl State {
             let modo = format!("{:?}", self.mode_info.mode).to_lowercase();
             let fila = if modo == "normal" {
                 // mínima: solo los atajos. ⌥A muestra/oculta los archivados (con cuántos hay)
+                // siempre visibles: ⌥? ayuda, ⌥A archivados (con cuántos hay, ▾ si desplegados)
                 if self.archivados.is_empty() {
-                    "#[fg=dim]⌥?".to_string()
+                    "#[fg=dim]⌥?  ⌥A".to_string()
                 } else {
                     format!("#[fg=dim]⌥?  ⌥A {}{}", self.archivados.len(), if self.mostrar_archivados { " ▾" } else { "" })
                 }
