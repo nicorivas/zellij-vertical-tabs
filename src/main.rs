@@ -532,6 +532,10 @@ struct State {
     atencion_file: String,
     /// bitácora de foco: cada cambio de tab activo, anotado por la instancia de ese tab
     tiempo_file: String,
+    /// tabs archivados (archivados.json): Claude cerrado, tab listo para retomar. Ocultos salvo ⌥A.
+    archivados: std::collections::BTreeSet<String>,
+    archivados_file: String,
+    mostrar_archivados: bool,
     propio_id: u32,
     ultimo_tab_activo: String,
     /// fila dibujada -> índice (0-based) del tab al que pertenece
@@ -624,6 +628,9 @@ impl ZellijPlugin for State {
             if self.tiempo_file.is_empty() {
                 self.tiempo_file = format!("{}/tiempo.log", dir);
             }
+            if self.archivados_file.is_empty() {
+                self.archivados_file = format!("{}/archivados.json", dir);
+            }
         }
         self.propio_id = get_plugin_ids().plugin_id;
 
@@ -660,6 +667,7 @@ impl ZellijPlugin for State {
                 }
                 self.leer_estado();
                 self.leer_atencion();
+                self.leer_archivados();
                 should_render = true;
             }
             return should_render;
@@ -724,6 +732,12 @@ impl ZellijPlugin for State {
                 _ => {}
             },
             Event::RunCommandResult(_code, stdout, _stderr, ctx) => {
+                if ctx.get("flow").map(|s| s.as_str()) == Some("archivados") {
+                    if let Ok(v) = serde_json::from_slice::<Vec<String>>(&stdout) {
+                        self.archivados = v.into_iter().collect();
+                        should_render = true;
+                    }
+                }
                 if ctx.get("flow").map(|s| s.as_str()) == Some("atencion") {
                     if let Ok(m) = serde_json::from_slice::<BTreeMap<String, AtencionEntrada>>(&stdout) {
                         self.atencion = m.into_iter().filter(|(_, e)| !e.estado.is_empty()).map(|(k, e)| (k, e.estado)).collect();
@@ -792,6 +806,14 @@ impl ZellijPlugin for State {
                     self.mudar(&m.desde, &m.hacia);
                 }
                 false
+            }
+            "archivados_reload" => {
+                self.leer_archivados();
+                false
+            }
+            "archivados_toggle" => {
+                self.mostrar_archivados = !self.mostrar_archivados;
+                true
             }
             "atencion" => {
                 if let Some(payload) = pipe_message.payload.as_deref()
@@ -884,6 +906,15 @@ impl State {
         if !ids.is_empty() {
             break_panes_to_tab_with_index(&ids, destino, true);
         }
+    }
+
+    fn leer_archivados(&self) {
+        if !self.permissions_granted || self.archivados_file.is_empty() {
+            return;
+        }
+        let mut ctx = BTreeMap::new();
+        ctx.insert("flow".to_string(), "archivados".to_string());
+        run_command(&["cat", &self.archivados_file], ctx);
     }
 
     /// Posición del tab donde vive ESTA instancia (por su id de plugin en el manifest).
@@ -1175,9 +1206,17 @@ impl State {
                 fijos.push(i);
             }
         }
-        let resto: Vec<usize> = (0..self.tabs.len()).filter(|i| !fijos.contains(i)).collect();
+        // Archivados: fuera de la lista numerada; van abajo, en su sección, solo si
+        // ⌥A los muestra (o si el activo es uno de ellos).
+        let active_real0 = self.active_tab_idx.saturating_sub(1);
+        let archivados: Vec<usize> = (0..self.tabs.len())
+            .filter(|&i| self.archivados.contains(&self.tabs[i].name) && !fijos.contains(&i))
+            .collect();
+        let mostrar_arch = self.mostrar_archivados || archivados.contains(&active_real0);
+        let resto: Vec<usize> = (0..self.tabs.len()).filter(|i| !fijos.contains(i) && !archivados.contains(i)).collect();
         let filas_fijas = if fijos.is_empty() { 0 } else { fijos.len() + 1 };
-        let available_rows = rows.saturating_sub(top_padding + filas_fijas);
+        let filas_arch = if mostrar_arch && !archivados.is_empty() { archivados.len() + 1 } else { 0 };
+        let available_rows = rows.saturating_sub(top_padding + filas_fijas + filas_arch + 1);
 
         let tab_count = resto.len();
         let active_real = self.active_tab_idx.saturating_sub(1);
@@ -1262,6 +1301,22 @@ impl State {
             row_map.push(None);
         }
 
+        // Sección de archivados (⌥A): raya y cada tab en gris, con su número real
+        if mostrar_arch && !archivados.is_empty() && lines.len() + 1 < rows {
+            lines.push(self.build_line(&parse_styled_string(SEPARADOR), cols, false));
+            row_map.push(None);
+            for &i in &archivados {
+                if lines.len() + 1 >= rows {
+                    break;
+                }
+                let tab = self.tabs[i].clone();
+                let fmt = if tab.active { "#[bg=237,fill]#[fg=dim,bg=237]{index}:▫ {name}{atencion}" } else { "#[fg=dim]{index}:▫ {name}{atencion}" };
+                let styled = self.expand_tmux_format(fmt, &tab, i + self.style.start_index);
+                lines.push(self.build_line(&styled, cols, tab.active));
+                row_map.push(Some(i));
+            }
+        }
+
         // Fill remaining rows with empty lines (just border)
         while lines.len() < rows {
             lines.push(self.build_empty_line(cols));
@@ -1274,7 +1329,12 @@ impl State {
         if rows >= 2 {
             let modo = format!("{:?}", self.mode_info.mode).to_lowercase();
             let fila = if modo == "normal" {
-                "#[fg=dim]normal · ⌥? ayuda".to_string()
+                // mínima: solo los atajos. ⌥A muestra/oculta los archivados (con cuántos hay)
+                if self.archivados.is_empty() {
+                    "#[fg=dim]⌥?".to_string()
+                } else {
+                    format!("#[fg=dim]⌥?  ⌥A {}{}", self.archivados.len(), if self.mostrar_archivados { " ▾" } else { "" })
+                }
             } else {
                 format!("#[fg=3,bold]{} #[fg=dim]· ⎋ vuelve", modo.to_uppercase())
             };
