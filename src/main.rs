@@ -783,18 +783,6 @@ impl ZellijPlugin for State {
                 self.leer_estado();
                 false
             }
-            "status_bar" => {
-                // {"accion":"cerrar"}: cada instancia cierra el zellij:status-bar de SU tab
-                if pipe_message.payload.as_deref().map(|p| p.contains("cerrar")).unwrap_or(false)
-                    && let Some(pos) = self.propio_tab()
-                    && let Some(panes) = self.pane_manifest.panes.get(&pos)
-                {
-                    for p in panes.iter().filter(|p| p.is_plugin && p.title.contains("status-bar")) {
-                        close_plugin_pane(p.id);
-                    }
-                }
-                false
-            }
             "mudar" => {
                 if let Some(payload) = pipe_message.payload.as_deref()
                     && let Ok(m) = serde_json::from_str::<MudarPipe>(payload)
@@ -1275,6 +1263,9 @@ impl State {
             row_map.push(None);
         }
         // Última fila: el modo de Zellij (sustituye a la status-bar de abajo).
+        // Nota: NO cerrar panes desde aquí. close_plugin_pane en 26 instancias a la vez
+        // reventó 15 con 'cannot recursively acquire mutex' (8-sep): el host reentra
+        // la instancia mientras procesa el pipe. La status-bar se quita por plantilla.
         if rows >= 2 {
             let modo = format!("{:?}", self.mode_info.mode).to_lowercase();
             let fila = if modo == "normal" {
