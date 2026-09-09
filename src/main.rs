@@ -904,6 +904,23 @@ impl State {
         run_command(&["cat", &self.estado_file], ctx);
     }
 
+    /// Sondeo: un solo `sh -c` lee estado.json, atencion.json, archivados.json y la marca
+    /// de "mostrar archivados". Va por Timer/RunCommandResult, el camino serializado del
+    /// host; los pipes NO lo son (reentran la instancia y revientan el mutex de stdout).
+    fn sondear(&self) {
+        if !self.permissions_granted || self.estado_file.is_empty() {
+            return;
+        }
+        let dir = std::path::Path::new(&self.estado_file).parent().map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
+        let cmd = format!(
+            "cat '{}' 2>/dev/null; printf '\\n@@\\n'; cat '{}' 2>/dev/null; printf '\\n@@\\n'; cat '{}' 2>/dev/null; printf '\\n@@\\n'; [ -e '{}/archivados.mostrar' ] && echo 1",
+            self.estado_file, self.atencion_file, self.archivados_file, dir
+        );
+        let mut ctx = BTreeMap::new();
+        ctx.insert("flow".to_string(), "sondeo".to_string());
+        run_command(&["sh", "-c", &cmd], ctx);
+    }
+
     /// Posición del tab donde vive ESTA instancia (por su id de plugin en el manifest).
     fn propio_tab(&self) -> Option<usize> {
         self.pane_manifest
