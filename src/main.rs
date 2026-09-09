@@ -629,6 +629,7 @@ impl ZellijPlugin for State {
             PermissionType::ReadApplicationState,
             PermissionType::ChangeApplicationState,
             PermissionType::RunCommands,
+            PermissionType::ReadCliPipes, // para unblock_cli_pipe_input
         ]);
 
         subscribe(&[
