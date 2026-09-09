@@ -783,6 +783,18 @@ impl ZellijPlugin for State {
                 self.leer_estado();
                 false
             }
+            "status_bar" => {
+                // {"accion":"cerrar"}: cada instancia cierra el zellij:status-bar de SU tab
+                if pipe_message.payload.as_deref().map(|p| p.contains("cerrar")).unwrap_or(false)
+                    && let Some(pos) = self.propio_tab()
+                    && let Some(panes) = self.pane_manifest.panes.get(&pos)
+                {
+                    for p in panes.iter().filter(|p| p.is_plugin && p.title.contains("status-bar")) {
+                        close_plugin_pane(p.id);
+                    }
+                }
+                false
+            }
             "mudar" => {
                 if let Some(payload) = pipe_message.payload.as_deref()
                     && let Ok(m) = serde_json::from_str::<MudarPipe>(payload)
@@ -1261,6 +1273,18 @@ impl State {
         while lines.len() < rows {
             lines.push(self.build_empty_line(cols));
             row_map.push(None);
+        }
+        // Última fila: el modo de Zellij (sustituye a la status-bar de abajo).
+        if rows >= 2 {
+            let modo = format!("{:?}", self.mode_info.mode).to_lowercase();
+            let fila = if modo == "normal" {
+                "#[fg=dim]normal · Alt+? ayuda".to_string()
+            } else {
+                format!("#[fg=3,bold]{} #[fg=dim]· Esc vuelve", modo.to_uppercase())
+            };
+            let i = rows - 1;
+            lines[i] = self.build_line(&parse_styled_string(&fila), cols, false);
+            row_map[i] = None;
         }
         self.row_map = row_map;
 
