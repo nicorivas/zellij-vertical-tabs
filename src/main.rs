@@ -445,7 +445,8 @@ impl Default for StyleConfig {
     fn default() -> Self {
         Self {
             format: "{index}:{name}{atencion}".to_string(),
-            format_active: "{index}:{name} {indicators}{atencion}".to_string(),
+            // fill: la fila entera del tab activo con fondo (gris bajo, 237)
+            format_active: "#[bg=237,fill]{index}:{name} {indicators}{atencion}".to_string(),
             overflow_above: "  ^ +{count}".to_string(),
             overflow_below: "  v +{count}".to_string(),
             indicator_active: "*".to_string(),
@@ -459,7 +460,7 @@ impl Default for StyleConfig {
             estado_format: "{estado}".to_string(),
             arriba: vec!["hoy".to_string()],
             format_arriba: "{name}{atencion}".to_string(),
-            format_arriba_active: "{name} {indicators}{atencion}".to_string(),
+            format_arriba_active: "#[bg=237,fill]{name} {indicators}{atencion}".to_string(),
         }
     }
 }
@@ -1146,7 +1147,7 @@ impl State {
 
         for &i in &fijos {
             if let Some(tab) = self.tabs.get(i).cloned() {
-                let reunion_activo = "   #[fg=13]{name} {indicators}{atencion}".to_string();
+                let reunion_activo = "#[bg=237,fill]   #[fg=13,bg=237]{name} {indicators}{atencion}".to_string();
                 let reunion = "   #[fg=13]{name}{atencion}".to_string();
                 let format: &str = if es_reunion(&tab.name) {
                     if tab.active { &reunion_activo } else { &reunion }
