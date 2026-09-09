@@ -904,72 +904,6 @@ impl State {
         run_command(&["cat", &self.estado_file], ctx);
     }
 
-    fn leer_atencion(&self) {
-        if !self.permissions_granted || self.atencion_file.is_empty() {
-            return;
-        }
-        let mut ctx = BTreeMap::new();
-        ctx.insert("flow".to_string(), "atencion".to_string());
-        run_command(&["cat", &self.atencion_file], ctx);
-    }
-
-    /// Mueve los panes de terminal del tab `desde` al tab `hacia`, si esta instancia
-    /// vive en `desde`. El tab de origen, vacío, lo cierra Zellij.
-    fn mudar(&self, desde: &str, hacia: &str) {
-        let propio = match self.propio_tab() {
-            Some(p) => p,
-            None => return,
-        };
-        // Actúa la instancia que vive en el DESTINO (una sola, y viva aunque la del
-        // origen haya muerto); el manifest trae los panes de todos los tabs.
-        let destino = match self.tabs.iter().find(|t| t.name == hacia) {
-            Some(t) => t.position,
-            None => return,
-        };
-        if destino != propio {
-            return;
-        }
-        let origen = match self.tabs.iter().find(|t| t.name == desde) {
-            Some(t) => t.position,
-            None => return,
-        };
-        let ids: Vec<PaneId> = self
-            .pane_manifest
-            .panes
-            .get(&origen)
-            .map(|ps| ps.iter().filter(|p| !p.is_plugin).map(|p| PaneId::Terminal(p.id)).collect())
-            .unwrap_or_default();
-        if !ids.is_empty() {
-            break_panes_to_tab_with_index(&ids, destino, true);
-        }
-    }
-
-    /// Sondeo: un solo `sh -c` lee estado.json, atencion.json, archivados.json y la marca
-    /// de "mostrar archivados". Va por Timer/RunCommandResult, el camino serializado del
-    /// host; los pipes NO lo son (reentran la instancia y revientan el mutex de stdout).
-    fn sondear(&self) {
-        if !self.permissions_granted || self.estado_file.is_empty() {
-            return;
-        }
-        let dir = std::path::Path::new(&self.estado_file).parent().map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
-        let cmd = format!(
-            "cat '{}' 2>/dev/null; printf '\\n@@\\n'; cat '{}' 2>/dev/null; printf '\\n@@\\n'; cat '{}' 2>/dev/null; printf '\\n@@\\n'; [ -e '{}/archivados.mostrar' ] && echo 1",
-            self.estado_file, self.atencion_file, self.archivados_file, dir
-        );
-        let mut ctx = BTreeMap::new();
-        ctx.insert("flow".to_string(), "sondeo".to_string());
-        run_command(&["sh", "-c", &cmd], ctx);
-    }
-
-    fn leer_archivados(&self) {
-        if !self.permissions_granted || self.archivados_file.is_empty() {
-            return;
-        }
-        let mut ctx = BTreeMap::new();
-        ctx.insert("flow".to_string(), "archivados".to_string());
-        run_command(&["cat", &self.archivados_file], ctx);
-    }
-
     /// Posición del tab donde vive ESTA instancia (por su id de plugin en el manifest).
     fn propio_tab(&self) -> Option<usize> {
         self.pane_manifest
@@ -1261,15 +1195,23 @@ impl State {
         }
         // Archivados: fuera de la lista numerada; van abajo, en su sección, solo si
         // ⌥A los muestra (o si el activo es uno de ellos).
-        let active_real0 = self.active_tab_idx.saturating_sub(1);
+        // Dos vistas (⌥A): los ACTIVOS (sección fija + lista numerada) o el ARCHIVO
+        // entero (solo los archivados, con scroll). Nunca las dos: no hay espacio.
         let archivados: Vec<usize> = (0..self.tabs.len())
             .filter(|&i| self.archivados.contains(&self.tabs[i].name) && !fijos.contains(&i))
             .collect();
-        let mostrar_arch = self.mostrar_archivados || archivados.contains(&active_real0);
-        let resto: Vec<usize> = (0..self.tabs.len()).filter(|i| !fijos.contains(i) && !archivados.contains(i)).collect();
+        let vista_archivo = self.mostrar_archivados;
+        if vista_archivo {
+            fijos.clear();
+        }
+        let resto: Vec<usize> = if vista_archivo {
+            archivados.clone()
+        } else {
+            (0..self.tabs.len()).filter(|i| !fijos.contains(i) && !archivados.contains(i)).collect()
+        };
         let filas_fijas = if fijos.is_empty() { 0 } else { fijos.len() + 1 };
-        let filas_arch = if mostrar_arch && !archivados.is_empty() { archivados.len() + 1 } else { 0 };
-        let available_rows = rows.saturating_sub(top_padding + filas_fijas + filas_arch + 1);
+        let filas_cabecera = if vista_archivo { 2 } else { 0 };
+        let available_rows = rows.saturating_sub(top_padding + filas_fijas + filas_cabecera + 1);
 
         let tab_count = resto.len();
         let active_real = self.active_tab_idx.saturating_sub(1);
@@ -1308,6 +1250,15 @@ impl State {
             row_map.push(None);
         }
 
+        // Cabecera de la vista archivo
+        if vista_archivo {
+            let cab = format!("#[fg=3,bold]ARCHIVO #[fg=dim]{} tab{}", archivados.len(), if archivados.len() == 1 { "" } else { "s" });
+            lines.push(self.build_line(&parse_styled_string(&cab), cols, false));
+            row_map.push(None);
+            lines.push(self.build_line(&parse_styled_string(SEPARADOR), cols, false));
+            row_map.push(None);
+        }
+
         // Render "above" overflow indicator
         if tabs_above > 0 {
             let indicator_text =
@@ -1330,6 +1281,9 @@ impl State {
                     &self.style.format
                 };
 
+                let fmt_arch_activo = "#[bg=237,fill]#[fg=dim,bg=237]{index}:▫ {name}{atencion}".to_string();
+                let fmt_arch = "#[fg=dim]{index}:▫ {name}{atencion}".to_string();
+                let format = if vista_archivo { if is_active { &fmt_arch_activo } else { &fmt_arch } } else { format };
                 let styled = self.expand_tmux_format(format, &tab, i + self.style.start_index);
                 lines.push(self.build_line(&styled, cols, is_active));
                 row_map.push(Some(i));
@@ -1352,22 +1306,6 @@ impl State {
             let styled = parse_styled_string(&indicator_text);
             lines.push(self.build_line(&styled, cols, false));
             row_map.push(None);
-        }
-
-        // Sección de archivados (⌥A): raya y cada tab en gris, con su número real
-        if mostrar_arch && !archivados.is_empty() && lines.len() + 1 < rows {
-            lines.push(self.build_line(&parse_styled_string(SEPARADOR), cols, false));
-            row_map.push(None);
-            for &i in &archivados {
-                if lines.len() + 1 >= rows {
-                    break;
-                }
-                let tab = self.tabs[i].clone();
-                let fmt = if tab.active { "#[bg=237,fill]#[fg=dim,bg=237]{index}:▫ {name}{atencion}" } else { "#[fg=dim]{index}:▫ {name}{atencion}" };
-                let styled = self.expand_tmux_format(fmt, &tab, i + self.style.start_index);
-                lines.push(self.build_line(&styled, cols, tab.active));
-                row_map.push(Some(i));
-            }
         }
 
         // Fill remaining rows with empty lines (just border)
