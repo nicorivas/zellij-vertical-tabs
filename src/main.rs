@@ -1269,7 +1269,7 @@ impl State {
         if rows >= 2 {
             let modo = format!("{:?}", self.mode_info.mode).to_lowercase();
             let fila = if modo == "normal" {
-                "#[fg=dim]normal · Alt+? ayuda".to_string()
+                "#[fg=dim]normal · ⌥? ayuda".to_string()
             } else {
                 format!("#[fg=3,bold]{} #[fg=dim]· Esc vuelve", modo.to_uppercase())
             };
