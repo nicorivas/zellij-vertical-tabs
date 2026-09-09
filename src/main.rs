@@ -1271,7 +1271,7 @@ impl State {
             let fila = if modo == "normal" {
                 "#[fg=dim]normal · ⌥? ayuda".to_string()
             } else {
-                format!("#[fg=3,bold]{} #[fg=dim]· Esc vuelve", modo.to_uppercase())
+                format!("#[fg=3,bold]{} #[fg=dim]· ⎋ vuelve", modo.to_uppercase())
             };
             let i = rows - 1;
             lines[i] = self.build_line(&parse_styled_string(&fila), cols, false);
