@@ -454,7 +454,9 @@ impl Default for StyleConfig {
             indicator_sync: "S".to_string(),
             max_name_length: 20,
             padding_top: 0,
-            border: String::new(),
+            // dos columnas en negro al borde derecho: canal entre la barra y el contenido
+            // (no las pinta el fondo del tab activo). Config `border` lo cambia.
+            border: "  ".to_string(),
             start_index: 1,
             activity_format: "#[fg=dim]{activity}".to_string(),
             estado_format: "{estado}".to_string(),
