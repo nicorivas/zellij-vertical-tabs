@@ -538,6 +538,12 @@ struct State {
     mostrar_archivados: bool,
     /// filas de estado/pendientes bajo cada tab: apagadas por defecto (marca `filas.on`)
     filas_estado: bool,
+    /// orden de la lista numerada: "" (Zellij), "alfa", "reciente", "prioridad" (archivo `orden`)
+    orden: String,
+    /// prioridad manual por tab (prioridades.json): 1 alta … 3 baja; sin prioridad = última
+    prioridades: BTreeMap<String, u8>,
+    /// último foco por tab (tail de tiempo.log): "AAAA-MM-DDTHH:MM:SS"
+    ultimo_foco: BTreeMap<String, String>,
     propio_id: u32,
     ultimo_tab_activo: String,
     /// fila dibujada -> índice (0-based) del tab al que pertenece
@@ -765,6 +771,23 @@ impl ZellijPlugin for State {
                     if mostrar != self.mostrar_archivados { self.mostrar_archivados = mostrar; should_render = true; }
                     let filas = partes.get(4).map(|s| s.trim() == "1").unwrap_or(false);
                     if filas != self.filas_estado { self.filas_estado = filas; should_render = true; }
+                    let orden = partes.get(5).map(|s| s.trim().to_string()).unwrap_or_default();
+                    if orden != self.orden { self.orden = orden; should_render = true; }
+                    if let Some(s) = partes.get(6)
+                        && let Ok(m) = serde_json::from_str::<BTreeMap<String, u8>>(s.trim())
+                        && m != self.prioridades
+                    {
+                        self.prioridades = m; should_render = true;
+                    }
+                    if let Some(s) = partes.get(7) {
+                        let mut uf: BTreeMap<String, String> = BTreeMap::new();
+                        for l in s.lines() {
+                            if let Some((h, n)) = l.split_once('\t') {
+                                uf.insert(n.trim().to_string(), h.trim().to_string());
+                            }
+                        }
+                        if uf != self.ultimo_foco { self.ultimo_foco = uf; should_render = true; }
+                    }
                     set_timeout(4.0);
                 }
                 if ctx.get("flow").map(|s| s.as_str()) == Some("archivados") {
@@ -917,8 +940,8 @@ impl State {
         }
         let dir = std::path::Path::new(&self.estado_file).parent().map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
         let cmd = format!(
-            "cat '{}' 2>/dev/null; printf '\\n@@\\n'; cat '{}' 2>/dev/null; printf '\\n@@\\n'; cat '{}' 2>/dev/null; printf '\\n@@\\n'; [ -e '{}/archivados.mostrar' ] && echo 1; printf '\\n@@\\n'; [ -e '{}/filas.on' ] && echo 1",
-            self.estado_file, self.atencion_file, self.archivados_file, dir, dir
+            "cat '{}' 2>/dev/null; printf '\\n@@\\n'; cat '{}' 2>/dev/null; printf '\\n@@\\n'; cat '{}' 2>/dev/null; printf '\\n@@\\n'; [ -e '{}/archivados.mostrar' ] && echo 1; printf '\\n@@\\n'; [ -e '{}/filas.on' ] && echo 1; printf '\\n@@\\n'; cat '{}/orden' 2>/dev/null; printf '\\n@@\\n'; cat '{}/prioridades.json' 2>/dev/null; printf '\\n@@\\n'; tail -n 400 '{}' 2>/dev/null",
+            self.estado_file, self.atencion_file, self.archivados_file, dir, dir, dir, dir, self.tiempo_file
         );
         let mut ctx = BTreeMap::new();
         ctx.insert("flow".to_string(), "sondeo".to_string());
@@ -1268,11 +1291,26 @@ impl State {
         if vista_archivo {
             fijos.clear();
         }
-        let resto: Vec<usize> = if vista_archivo {
+        let mut resto: Vec<usize> = if vista_archivo {
             archivados.clone()
         } else {
             (0..self.tabs.len()).filter(|i| !fijos.contains(i) && !archivados.contains(i)).collect()
         };
+        // Orden de dibujo (⌥O): los números siguen siendo los reales.
+        match self.orden.as_str() {
+            "alfa" => resto.sort_by_key(|&i| self.tabs[i].name.to_lowercase()),
+            "reciente" => resto.sort_by(|&a, &b| {
+                let fa = self.ultimo_foco.get(&self.tabs[a].name).cloned().unwrap_or_default();
+                let fb = self.ultimo_foco.get(&self.tabs[b].name).cloned().unwrap_or_default();
+                fb.cmp(&fa).then_with(|| a.cmp(&b))
+            }),
+            "prioridad" => resto.sort_by(|&a, &b| {
+                let pa = *self.prioridades.get(&self.tabs[a].name).unwrap_or(&9);
+                let pb = *self.prioridades.get(&self.tabs[b].name).unwrap_or(&9);
+                pa.cmp(&pb).then_with(|| self.tabs[a].name.to_lowercase().cmp(&self.tabs[b].name.to_lowercase()))
+            }),
+            _ => {}
+        }
         let filas_fijas = if fijos.is_empty() { 0 } else { fijos.len() + 1 };
         let filas_cabecera = if vista_archivo { 2 } else { 0 };
         let available_rows = rows.saturating_sub(top_padding + filas_fijas + filas_cabecera + 1);
@@ -1386,11 +1424,9 @@ impl State {
             let fila = if modo == "normal" {
                 // mínima: solo los atajos. ⌥A muestra/oculta los archivados (con cuántos hay)
                 // siempre visibles: ⌥? ayuda, ⌥A archivados (con cuántos hay, ▾ si desplegados)
-                if self.archivados.is_empty() {
-                    "#[fg=dim]⌥?  ⌥A".to_string()
-                } else {
-                    format!("#[fg=dim]⌥?  ⌥A {}{}", self.archivados.len(), if self.mostrar_archivados { " ▾" } else { "" })
-                }
+                let arch = if self.archivados.is_empty() { "⌥A".to_string() } else { format!("⌥A {}{}", self.archivados.len(), if self.mostrar_archivados { " ▾" } else { "" }) };
+                let orden = match self.orden.as_str() { "alfa" => " a-z", "reciente" => " ◷", "prioridad" => " !", _ => "" };
+                format!("#[fg=dim]⌥?  {}  ⌥O{}", arch, orden)
             } else {
                 format!("#[fg=3,bold]{} #[fg=dim]· ⎋ vuelve", modo.to_uppercase())
             };
