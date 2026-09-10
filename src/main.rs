@@ -793,7 +793,7 @@ impl ZellijPlugin for State {
                     }
                     if !self.sondeo_programado {
                         self.sondeo_programado = true;
-                        set_timeout(4.0);
+                        set_timeout(6.0);
                     }
                 }
                 if ctx.get("flow").map(|s| s.as_str()) == Some("archivados") {
