@@ -544,6 +544,8 @@ struct State {
     prioridades: BTreeMap<String, u8>,
     /// último foco por tab (tail de tiempo.log): "AAAA-MM-DDTHH:MM:SS"
     ultimo_foco: BTreeMap<String, String>,
+    /// hay un temporizador de sondeo programado (evita que se apilen)
+    sondeo_programado: bool,
     propio_id: u32,
     ultimo_tab_activo: String,
     /// fila dibujada -> índice (0-based) del tab al que pertenece
@@ -739,6 +741,7 @@ impl ZellijPlugin for State {
                 _ => {}
             },
             Event::Timer(_) => {
+                self.sondeo_programado = false;
                 self.sondear();
             }
             Event::RunCommandResult(_code, stdout, _stderr, ctx) => {
@@ -788,7 +791,10 @@ impl ZellijPlugin for State {
                         }
                         if uf != self.ultimo_foco { self.ultimo_foco = uf; should_render = true; }
                     }
-                    set_timeout(4.0);
+                    if !self.sondeo_programado {
+                        self.sondeo_programado = true;
+                        set_timeout(4.0);
+                    }
                 }
                 if ctx.get("flow").map(|s| s.as_str()) == Some("archivados") {
                     if let Ok(v) = serde_json::from_slice::<Vec<String>>(&stdout) {
