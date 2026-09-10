@@ -1128,13 +1128,17 @@ impl State {
                         continue;
                     }
                     if name == "prio" {
-                        let simbolo = match self.prioridades.get(&tab.name) {
-                            Some(1) => "!",
-                            Some(2) => "+",
-                            Some(3) => "-",
-                            _ => " ",
+                        // círculos, como el semáforo, pero en gris y en su propia columna:
+                        // ● alta · ◐ media · ○ baja · nada sin prioridad
+                        let (simbolo, color) = match self.prioridades.get(&tab.name) {
+                            Some(1) => ("●", ColorSpec::EightBit(252)),
+                            Some(2) => ("◐", ColorSpec::EightBit(246)),
+                            Some(3) => ("○", ColorSpec::EightBit(240)),
+                            _ => (" ", ColorSpec::Default),
                         };
-                        result.push(simbolo.to_string(), current_style.clone());
+                        let mut st = current_style.clone();
+                        st.fg = color;
+                        result.push(simbolo.to_string(), st);
                         continue;
                     }
                     if name == "atencion" || name == "a" {
