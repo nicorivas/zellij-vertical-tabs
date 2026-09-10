@@ -1012,9 +1012,12 @@ impl State {
         // Si junto al archivo hay bin/flow-foco, él anota (y hace lo que quiera con el
         // foco, p. ej. decir el estado del proyecto); si no, anotar aquí.
         let dir = std::path::Path::new(&self.tiempo_file).parent().map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
+        // flow-foco recibe también la posición (1-based) del tab: renombrar/abrir la
+        // ficha por posición, no por el foco del cliente, que puede haberse movido.
+        let pos1 = self.propio_tab().map(|p| p + 1).unwrap_or(0);
         let cmd = format!(
-            "F='{}/bin/flow-foco'; if [ -x \"$F\" ]; then \"$F\" '{}'; else printf '%s\t%s\n' \"$(date +%Y-%m-%dT%H:%M:%S)\" '{}' >> '{}'; fi",
-            dir, seguro, seguro, self.tiempo_file
+            "F='{}/bin/flow-foco'; if [ -x \"$F\" ]; then \"$F\" '{}' {}; else printf '%s\t%s\n' \"$(date +%Y-%m-%dT%H:%M:%S)\" '{}' >> '{}'; fi",
+            dir, seguro, pos1, seguro, self.tiempo_file
         );
         let mut ctx = BTreeMap::new();
         ctx.insert("flow".to_string(), "tiempo".to_string());
