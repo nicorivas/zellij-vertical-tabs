@@ -444,12 +444,12 @@ struct StyleConfig {
 impl Default for StyleConfig {
     fn default() -> Self {
         Self {
-            format: "{index}:{name}{atencion}".to_string(),
+            format: "{num} {prio} {name}{atencion}".to_string(),
             // fill: la fila entera del tab activo con fondo (gris bajo, 237)
-            format_active: "#[bg=237,fill]{index}:{name} {indicators}{atencion}".to_string(),
+            format_active: "#[bg=237,fill]{num} {prio} {name}{indicators}{atencion}".to_string(),
             overflow_above: "  ^ +{count}".to_string(),
             overflow_below: "  v +{count}".to_string(),
-            indicator_active: "*".to_string(),
+            indicator_active: String::new(), // el fondo del tab activo basta
             indicator_fullscreen: "Z".to_string(),
             indicator_sync: "S".to_string(),
             max_name_length: 20,
@@ -461,8 +461,8 @@ impl Default for StyleConfig {
             activity_format: "#[fg=dim]{activity}".to_string(),
             estado_format: "{estado}".to_string(),
             arriba: vec!["hoy".to_string()],
-            format_arriba: "{name}{atencion}".to_string(),
-            format_arriba_active: "#[bg=237,fill]{name} {indicators}{atencion}".to_string(),
+            format_arriba: "     {name}{atencion}".to_string(),
+            format_arriba_active: "#[bg=237,fill]     {name}{indicators}{atencion}".to_string(),
         }
     }
 }
@@ -1123,6 +1123,20 @@ impl State {
                     current_style = style;
                 }
                 FormatToken::Variable { name, width } => {
+                    if name == "num" {
+                        result.push(format!("{:>2}", index), current_style.clone());
+                        continue;
+                    }
+                    if name == "prio" {
+                        let simbolo = match self.prioridades.get(&tab.name) {
+                            Some(1) => "!",
+                            Some(2) => "+",
+                            Some(3) => "-",
+                            _ => " ",
+                        };
+                        result.push(simbolo.to_string(), current_style.clone());
+                        continue;
+                    }
                     if name == "atencion" || name == "a" {
                         let (texto, color) = self.atencion_de(&tab.name);
                         if !texto.is_empty() {
@@ -1333,8 +1347,8 @@ impl State {
 
         for &i in &fijos {
             if let Some(tab) = self.tabs.get(i).cloned() {
-                let reunion_activo = "#[bg=237,fill]   #[fg=13,bg=237]{name} {indicators}{atencion}".to_string();
-                let reunion = "   #[fg=13]{name}{atencion}".to_string();
+                let reunion_activo = "#[bg=237,fill]     #[fg=13,bg=237]{name}{indicators}{atencion}".to_string();
+                let reunion = "     #[fg=13]{name}{atencion}".to_string();
                 let format: &str = if es_reunion(&tab.name) {
                     if tab.active { &reunion_activo } else { &reunion }
                 } else if tab.active {
@@ -1383,8 +1397,8 @@ impl State {
                     &self.style.format
                 };
 
-                let fmt_arch_activo = "#[bg=237,fill]#[fg=dim,bg=237]{index}:▫ {name}{atencion}".to_string();
-                let fmt_arch = "#[fg=dim]{index}:▫ {name}{atencion}".to_string();
+                let fmt_arch_activo = "#[bg=237,fill]#[fg=dim,bg=237]{num} {prio} {name}{atencion}".to_string();
+                let fmt_arch = "#[fg=dim]{num} {prio} {name}{atencion}".to_string();
                 let format = if vista_archivo { if is_active { &fmt_arch_activo } else { &fmt_arch } } else { format };
                 let styled = self.expand_tmux_format(format, &tab, i + self.style.start_index);
                 lines.push(self.build_line(&styled, cols, is_active));
