@@ -536,6 +536,8 @@ struct State {
     archivados: std::collections::BTreeSet<String>,
     archivados_file: String,
     mostrar_archivados: bool,
+    /// filas de estado/pendientes bajo cada tab: apagadas por defecto (marca `filas.on`)
+    filas_estado: bool,
     propio_id: u32,
     ultimo_tab_activo: String,
     /// fila dibujada -> índice (0-based) del tab al que pertenece
@@ -761,6 +763,8 @@ impl ZellijPlugin for State {
                     }
                     let mostrar = partes.get(3).map(|s| s.trim() == "1").unwrap_or(false);
                     if mostrar != self.mostrar_archivados { self.mostrar_archivados = mostrar; should_render = true; }
+                    let filas = partes.get(4).map(|s| s.trim() == "1").unwrap_or(false);
+                    if filas != self.filas_estado { self.filas_estado = filas; should_render = true; }
                     set_timeout(4.0);
                 }
                 if ctx.get("flow").map(|s| s.as_str()) == Some("archivados") {
@@ -913,8 +917,8 @@ impl State {
         }
         let dir = std::path::Path::new(&self.estado_file).parent().map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
         let cmd = format!(
-            "cat '{}' 2>/dev/null; printf '\\n@@\\n'; cat '{}' 2>/dev/null; printf '\\n@@\\n'; cat '{}' 2>/dev/null; printf '\\n@@\\n'; [ -e '{}/archivados.mostrar' ] && echo 1",
-            self.estado_file, self.atencion_file, self.archivados_file, dir
+            "cat '{}' 2>/dev/null; printf '\\n@@\\n'; cat '{}' 2>/dev/null; printf '\\n@@\\n'; cat '{}' 2>/dev/null; printf '\\n@@\\n'; [ -e '{}/archivados.mostrar' ] && echo 1; printf '\\n@@\\n'; [ -e '{}/filas.on' ] && echo 1",
+            self.estado_file, self.atencion_file, self.archivados_file, dir, dir
         );
         let mut ctx = BTreeMap::new();
         ctx.insert("flow".to_string(), "sondeo".to_string());
@@ -1002,6 +1006,9 @@ impl State {
     /// Ya vienen con el formato de estilo aplicado; falta parsearlas y truncarlas.
     fn filas_extra(&self, tab: &TabInfo, cols: usize) -> Vec<String> {
         let mut extra = Vec::new();
+        if !self.filas_estado {
+            return extra; // apagadas por defecto: la ficha (⌥R) ya muestra el estado
+        }
         if let Some(e) = self.estado.get(&tab.name) {
             if !e.estado.is_empty() {
                 let fila = format!("  › {}", e.estado);
