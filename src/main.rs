@@ -810,7 +810,7 @@ impl ZellijPlugin for State {
                     }
                     if !self.sondeo_programado {
                         self.sondeo_programado = true;
-                        set_timeout(6.0);
+                        set_timeout(15.0);
                     }
                 }
                 if ctx.get("flow").map(|s| s.as_str()) == Some("archivados") {
@@ -963,7 +963,7 @@ impl State {
         }
         let dir = std::path::Path::new(&self.estado_file).parent().map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
         let cmd = format!(
-            "cat '{}' 2>/dev/null; printf '\\n@@\\n'; cat '{}' 2>/dev/null; printf '\\n@@\\n'; cat '{}' 2>/dev/null; printf '\\n@@\\n'; [ -e '{}/archivados.mostrar' ] && echo 1; printf '\\n@@\\n'; [ -e '{}/filas.on' ] && echo 1; printf '\\n@@\\n'; cat '{}/orden' 2>/dev/null; printf '\\n@@\\n'; cat '{}/prioridades.json' 2>/dev/null; printf '\\n@@\\n'; tail -n 400 '{}' 2>/dev/null",
+            "cat '{}' 2>/dev/null; printf '\\n@@\\n'; cat '{}' 2>/dev/null; printf '\\n@@\\n'; cat '{}' 2>/dev/null; printf '\\n@@\\n'; [ -e '{}/archivados.mostrar' ] && echo 1; printf '\\n@@\\n'; [ -e '{}/filas.on' ] && echo 1; printf '\\n@@\\n'; cat '{}/orden' 2>/dev/null; printf '\\n@@\\n'; cat '{}/prioridades.json' 2>/dev/null; printf '\\n@@\\n'; tail -n 80 '{}' 2>/dev/null",
             self.estado_file, self.atencion_file, self.archivados_file, dir, dir, dir, dir, self.tiempo_file
         );
         let mut ctx = BTreeMap::new();
