@@ -549,6 +549,7 @@ struct State {
     /// última fila: columna donde empiezan ⌥A y ⌥O (para el clic) y cuántas filas hay
     col_arch: usize,
     col_orden: usize,
+    col_tareas: usize,
     ultimas_filas: usize,
     propio_id: u32,
     ultimo_tab_activo: String,
@@ -733,7 +734,9 @@ impl ZellijPlugin for State {
                     let (row, col) = (row as usize, col as usize);
                     if self.ultimas_filas > 0 && row + 1 == self.ultimas_filas {
                         // última fila: los atajos son clicables (instantáneo, sin esperar al sondeo)
-                        if col >= self.col_orden {
+                        if col >= self.col_tareas {
+                            self.abrir_tareas();
+                        } else if col >= self.col_orden {
                             self.abrir_orden();
                         } else if col >= self.col_arch {
                             self.mostrar_archivados = !self.mostrar_archivados;
@@ -1015,6 +1018,16 @@ impl State {
         }
         let dir = std::path::Path::new(&self.estado_file).parent().map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
         let cmd = if mostrar { format!("touch '{}/archivados.mostrar'", dir) } else { format!("rm -f '{}/archivados.mostrar'", dir) };
+        run_command(&["sh", "-c", &cmd], BTreeMap::new());
+    }
+
+    /// Abre la tabla de tareas (bin/flow-tareas) como pane flotante grande.
+    fn abrir_tareas(&self) {
+        if !self.permissions_granted || self.estado_file.is_empty() {
+            return;
+        }
+        let dir = std::path::Path::new(&self.estado_file).parent().map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
+        let cmd = format!("zellij action new-pane --floating --close-on-exit --width 92% --height 88% --x 4% --y 5% -n '⌥T tareas' -- '{}/bin/flow-tareas'", dir);
         run_command(&["sh", "-c", &cmd], BTreeMap::new());
     }
 
@@ -1490,7 +1503,8 @@ impl State {
                 // columnas visibles: "⌥?" + 2 espacios = 4; luego arch, 2 espacios, ⌥O
                 self.col_arch = 4;
                 self.col_orden = 4 + arch.chars().count() + 2;
-                format!("#[fg=dim]⌥?  {}  ⌥O{}", arch, orden)
+                self.col_tareas = self.col_orden + 2 + orden.chars().count() + 2;
+                format!("#[fg=dim]⌥?  {}  ⌥O{}  ⌥T", arch, orden)
             } else {
                 format!("#[fg=3,bold]{} #[fg=dim]· ⎋ vuelve", modo.to_uppercase())
             };
