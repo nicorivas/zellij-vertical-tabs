@@ -546,6 +546,10 @@ struct State {
     ultimo_foco: BTreeMap<String, String>,
     /// hay un temporizador de sondeo programado (evita que se apilen)
     sondeo_programado: bool,
+    /// última fila: columna donde empiezan ⌥A y ⌥O (para el clic) y cuántas filas hay
+    col_arch: usize,
+    col_orden: usize,
+    ultimas_filas: usize,
     propio_id: u32,
     ultimo_tab_activo: String,
     /// fila dibujada -> índice (0-based) del tab al que pertenece
@@ -725,8 +729,18 @@ impl ZellijPlugin for State {
                 should_render = true;
             }
             Event::Mouse(me) => match me {
-                Mouse::LeftClick(row, _col) => {
-                    if let Some(idx) = self.get_tab_at_row(row as usize) {
+                Mouse::LeftClick(row, col) => {
+                    let (row, col) = (row as usize, col as usize);
+                    if self.ultimas_filas > 0 && row + 1 == self.ultimas_filas {
+                        // última fila: los atajos son clicables (instantáneo, sin esperar al sondeo)
+                        if col >= self.col_orden {
+                            self.abrir_orden();
+                        } else if col >= self.col_arch {
+                            self.mostrar_archivados = !self.mostrar_archivados;
+                            self.marcar_archivados(self.mostrar_archivados);
+                            should_render = true;
+                        }
+                    } else if let Some(idx) = self.get_tab_at_row(row) {
                         switch_tab_to(idx as u32);
                     }
                 }
@@ -992,6 +1006,26 @@ impl State {
         if !ids.is_empty() {
             break_panes_to_tab_with_index(&ids, destino, true);
         }
+    }
+
+    /// Escribe/borra la marca `archivados.mostrar` para que las demás instancias sigan al sondeo.
+    fn marcar_archivados(&self, mostrar: bool) {
+        if !self.permissions_granted || self.estado_file.is_empty() {
+            return;
+        }
+        let dir = std::path::Path::new(&self.estado_file).parent().map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
+        let cmd = if mostrar { format!("touch '{}/archivados.mostrar'", dir) } else { format!("rm -f '{}/archivados.mostrar'", dir) };
+        run_command(&["sh", "-c", &cmd], BTreeMap::new());
+    }
+
+    /// Abre el menú de orden (bin/flow-orden) como pane flotante.
+    fn abrir_orden(&self) {
+        if !self.permissions_granted || self.estado_file.is_empty() {
+            return;
+        }
+        let dir = std::path::Path::new(&self.estado_file).parent().map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
+        let cmd = format!("zellij action new-pane --floating --close-on-exit -n '⌥O orden' -- '{}/bin/flow-orden'", dir);
+        run_command(&["sh", "-c", &cmd], BTreeMap::new());
     }
 
     /// Posición del tab donde vive ESTA instancia (por su id de plugin en el manifest).
@@ -1453,6 +1487,9 @@ impl State {
                 // siempre visibles: ⌥? ayuda, ⌥A archivados (con cuántos hay, ▾ si desplegados)
                 let arch = if self.archivados.is_empty() { "⌥A".to_string() } else { format!("⌥A {}{}", self.archivados.len(), if self.mostrar_archivados { " ▾" } else { "" }) };
                 let orden = match self.orden.as_str() { "alfa" => " a-z", "reciente" => " ◷", "prioridad" => " !", _ => "" };
+                // columnas visibles: "⌥?" + 2 espacios = 4; luego arch, 2 espacios, ⌥O
+                self.col_arch = 4;
+                self.col_orden = 4 + arch.chars().count() + 2;
                 format!("#[fg=dim]⌥?  {}  ⌥O{}", arch, orden)
             } else {
                 format!("#[fg=3,bold]{} #[fg=dim]· ⎋ vuelve", modo.to_uppercase())
@@ -1462,6 +1499,7 @@ impl State {
             row_map[i] = None;
         }
         self.row_map = row_map;
+        self.ultimas_filas = rows;
 
         // Print all lines with ANSI styling
         for (i, line) in lines.iter().enumerate() {
