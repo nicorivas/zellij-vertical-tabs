@@ -546,6 +546,9 @@ struct State {
     ultimo_foco: BTreeMap<String, String>,
     /// hay un temporizador de sondeo programado (evita que se apilen)
     sondeo_programado: bool,
+    /// animación del "trabajando" (solo en la barra del tab activo): cuadro y segundos desde el último sondeo
+    cuadro: usize,
+    desde_sondeo: f64,
     /// última fila: columna donde empiezan ⌥A y ⌥O (para el clic) y cuántas filas hay
     col_arch: usize,
     col_orden: usize,
@@ -757,9 +760,20 @@ impl ZellijPlugin for State {
                 }
                 _ => {}
             },
-            Event::Timer(_) => {
+            Event::Timer(elapsed) => {
                 self.sondeo_programado = false;
-                self.sondear();
+                self.desde_sondeo += elapsed;
+                if self.desde_sondeo >= 15.0 {
+                    self.desde_sondeo = 0.0;
+                    self.sondear();
+                }
+                if self.animando() {
+                    self.cuadro = self.cuadro.wrapping_add(1);
+                    should_render = true;
+                    self.programar(0.5);
+                } else {
+                    self.programar(15.0 - self.desde_sondeo);
+                }
             }
             Event::RunCommandResult(_code, stdout, _stderr, ctx) => {
                 if ctx.get("flow").map(|s| s.as_str()) == Some("sondeo") {
@@ -809,8 +823,7 @@ impl ZellijPlugin for State {
                         if uf != self.ultimo_foco { self.ultimo_foco = uf; should_render = true; }
                     }
                     if !self.sondeo_programado {
-                        self.sondeo_programado = true;
-                        set_timeout(15.0);
+                        self.programar(if self.animando() { 0.5 } else { 15.0 });
                     }
                 }
                 if ctx.get("flow").map(|s| s.as_str()) == Some("archivados") {
@@ -1011,6 +1024,19 @@ impl State {
         }
     }
 
+    /// ¿Esta barra está a la vista (su tab es el activo) y hay algún Claude trabajando?
+    fn animando(&self) -> bool {
+        let activo = self.tabs.iter().find(|t| t.active).map(|t| t.position);
+        activo.is_some() && activo == self.propio_tab() && self.atencion.values().any(|e| e == "trabajando")
+    }
+
+    fn programar(&mut self, segundos: f64) {
+        if !self.sondeo_programado {
+            self.sondeo_programado = true;
+            set_timeout(segundos.max(0.1));
+        }
+    }
+
     /// Escribe/borra la marca `archivados.mostrar` para que las demás instancias sigan al sondeo.
     fn marcar_archivados(&self, mostrar: bool) {
         if !self.permissions_granted || self.estado_file.is_empty() {
@@ -1074,7 +1100,7 @@ impl State {
     /// Símbolo y color del semáforo de un tab.
     fn atencion_de(&self, tab: &str) -> (&'static str, ColorSpec) {
         match self.atencion.get(tab).map(|s| s.as_str()) {
-            Some("trabajando") => ("●", ColorSpec::EightBit(4)),
+            Some("trabajando") => (["-", "\\", "|", "/"][self.cuadro % 4], ColorSpec::EightBit(4)),
             Some("espera") => ("○", ColorSpec::EightBit(3)),
             Some("listo") => ("✓", ColorSpec::EightBit(2)),
             _ => ("", ColorSpec::Default),
