@@ -1026,8 +1026,10 @@ impl State {
 
     /// ¿Esta barra está a la vista (su tab es el activo) y hay algún Claude trabajando?
     fn animando(&self) -> bool {
-        let activo = self.tabs.iter().find(|t| t.active).map(|t| t.position);
-        activo.is_some() && activo == self.propio_tab() && self.atencion.values().any(|e| e == "trabajando")
+        // Descartado el 14-sep: animar a 2 fps exige un set_timeout (llamada al host) cada
+        // medio segundo, y cualquier evento de pane que llegue mientras tanto reentra la
+        // instancia y la mata; la barra del tab activo, justo la que se ve, era la que moría.
+        false
     }
 
     fn programar(&mut self, segundos: f64) {
@@ -1100,7 +1102,7 @@ impl State {
     /// Símbolo y color del semáforo de un tab.
     fn atencion_de(&self, tab: &str) -> (&'static str, ColorSpec) {
         match self.atencion.get(tab).map(|s| s.as_str()) {
-            Some("trabajando") => (["-", "\\", "|", "/"][self.cuadro % 4], ColorSpec::EightBit(4)),
+            Some("trabajando") => ("●", ColorSpec::EightBit(4)),
             Some("espera") => ("○", ColorSpec::EightBit(3)),
             Some("listo") => ("✓", ColorSpec::EightBit(2)),
             _ => ("", ColorSpec::Default),
